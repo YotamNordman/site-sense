@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 16px;
+      margin: 0;
+      color: #1a1a1a;
+    }
+    h3 { margin: 0 0 8px 0; font-size: 16px; }
+    .status { font-size: 13px; color: #666; margin-bottom: 12px; }
+    .status.connected { color: #16a34a; }
+    .status.disconnected { color: #dc2626; }
+    .prompt { font-size: 13px; margin-bottom: 12px; line-height: 1.4; }
+    .buttons { display: flex; gap: 8px; margin-bottom: 12px; }
+    button {
+      flex: 1; padding: 8px 12px; border: none; border-radius: 6px;
+      font-size: 13px; font-weight: 500; cursor: pointer;
+    }
+    #allow { background: #2563eb; color: white; }
+    #allow:hover { background: #1d4ed8; }
+    #deny { background: #f3f4f6; color: #374151; }
+    #deny:hover { background: #e5e7eb; }
+    .approved { text-align: center; padding: 8px 0; color: #16a34a; font-size: 13px; }
+    .section { margin-bottom: 12px; }
+    .info { font-size: 11px; color: #9ca3af; margin-top: 8px; }
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 0; border-top: 1px solid #f0f0f0; margin-top: 8px;
+    }
+    .toggle-label { font-size: 12px; color: #555; }
+    .toggle-sublabel { font-size: 11px; color: #999; }
+    .switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background: #ccc; border-radius: 20px; transition: .2s;
+    }
+    .slider:before {
+      content: ""; position: absolute; height: 14px; width: 14px;
+      left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: .2s;
+    }
+    input:checked + .slider { background: #2563eb; }
+    input:checked + .slider:before { transform: translateX(16px); }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h3>🔍 site-sense</h3>
+  <div id="connection-status" class="status disconnected">Checking...</div>
+
+  <div id="approval-section" class="section hidden">
+    <p class="prompt">
+      Your AI assistant wants to see the current browser tab.
+      <strong>Read-only</strong> access for this session only.
+    </p>
+    <div class="buttons">
+      <button id="allow">Allow for this session</button>
+      <button id="deny">Deny</button>
+    </div>
+  </div>
+
+  <div id="approved-section" class="section hidden">
+    <div class="approved">✓ Session active</div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">All-sites access</div>
+        <div class="toggle-sublabel">Skip clicking icon per page</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="all-sites">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="info">Read-only. No data stored. Resets when CLI disconnects.</div>
+  <script src="popup.js"></script>
+</body>
+</html>

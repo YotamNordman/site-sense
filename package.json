@@ -1,0 +1,36 @@
+{
+  "name": "site-sense",
+  "version": "0.1.0",
+  "description": "Give your AI coding CLI eyes into web portals",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc && npm run build:ext",
+    "build:bridge": "tsc",
+    "build:ext": "ENTRY=background vite build -c extension/vite.config.ts && ENTRY=content vite build -c extension/vite.config.ts && ENTRY=inject vite build -c extension/vite.config.ts && ENTRY=popup vite build -c extension/vite.config.ts && npm run copy:ext-static",
+    "copy:ext-static": "cp extension/manifest.json dist/extension/ && cp extension/src/popup/index.html dist/extension/popup.html && cp -r extension/icons dist/extension/",
+    "dev": "tsc --watch",
+    "dev:ext": "vite build --watch --config extension/vite.config.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "mcp-server": "node dist/bridge/src/index.js",
+    "native-host": "node dist/bridge/src/native-host.js",
+    "install-host": "node dist/scripts/install.js",
+    "setup": "npm run build && node dist/scripts/install.js",
+    "setup:launch": "npm run build && node dist/scripts/install.js --launch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.38",
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3",
+    "vitest": "^4.1.2"
+  }
+}

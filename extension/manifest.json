@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "site-sense",
+  "version": "0.1.0",
+  "description": "Give your AI coding CLI eyes into web portals",
+
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsTPhE+1XMRiCY2dzf37RTUE0SSy2IrWJeqjite2n6nG/4g7BvlB8qAzb2JsDx/QE+Ra+IVrX+LSPB3KjLzmgPB9J3xKkr7R0aTswyVv3qN8VrFgPV9dQFvpLoAdmcN+CYrUA7x1qRE+AF5N3jt6al2/FXMw/tpGDimDhdUXPDOZvcqt3Rc+6h1EHXoyFZAenac4bhLO7PhMBMUmUJs719u7zIT/euek8laEvjzSCO6RHTjYDEXbV1aPkUkKPChBdfXXGwRZC3+o3L24qJ+IvgTst4ZdXAq85L9JbAlPGV84WtpdTngZYW1oNUYEj60C5h0IkpT1gG8nsDx3HSTOvnwIDAQAB",
+
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging"
+  ],
+
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_title": "site-sense",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
