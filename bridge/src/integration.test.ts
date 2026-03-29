@@ -10,12 +10,7 @@ import {
 } from './native-messaging.js';
 
 const SOCKET_DIR = path.join(os.tmpdir(), 'site-sense');
-
-function findTestSocket(): string {
-  const files = fs.readdirSync(SOCKET_DIR).filter(f => /^bridge-\d+\.sock$/.test(f));
-  if (files.length === 0) throw new Error('No socket found');
-  return path.join(SOCKET_DIR, files[files.length - 1]);
-}
+const SOCKET_PATH = path.join(SOCKET_DIR, 'bridge.sock');
 
 /**
  * Integration test: validates MCP server ↔ native host ↔ simulated extension.
@@ -25,8 +20,9 @@ function findTestSocket(): string {
  */
 describe('MCP Server integration', () => {
   let mcpProcess: ChildProcess;
-  let mcpReader: ReturnType<typeof createNativeMessageReader>;
   let mcpStdout = '';
+  let mockNativeHost: net.Server;
+  let mcpClientSocket: net.Socket | null = null;
 
   function sendMCPRequest(request: object): Promise<object> {
     return new Promise((resolve) => {
@@ -56,7 +52,16 @@ describe('MCP Server integration', () => {
   }
 
   beforeAll(async () => {
-    // Start MCP server
+    // Create mock native host socket server (the MCP server connects to this)
+    fs.mkdirSync(SOCKET_DIR, { recursive: true });
+    try { fs.unlinkSync(SOCKET_PATH); } catch { /* ok */ }
+
+    mockNativeHost = net.createServer((socket) => {
+      mcpClientSocket = socket;
+    });
+    mockNativeHost.listen(SOCKET_PATH);
+
+    // Start MCP server (connects to our mock socket as a client)
     const serverPath = path.resolve(
       import.meta.dirname,
       '../../dist/bridge/src/index.js'
@@ -66,18 +71,14 @@ describe('MCP Server integration', () => {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    // Wait for a bridge-*.sock to appear
+    // Wait for MCP server to connect to our mock socket
     await new Promise<void>((resolve, reject) => {
       const maxWait = 5000;
       const start = Date.now();
       const check = () => {
-        try {
-          findTestSocket(); // throws if none found
-          resolve();
-        } catch {
-          if (Date.now() - start > maxWait) reject(new Error('Socket never appeared'));
-          else setTimeout(check, 100);
-        }
+        if (mcpClientSocket) resolve();
+        else if (Date.now() - start > maxWait) reject(new Error('MCP server never connected'));
+        else setTimeout(check, 100);
       };
       check();
     });
@@ -104,6 +105,8 @@ describe('MCP Server integration', () => {
 
   afterAll(() => {
     mcpProcess?.kill('SIGTERM');
+    mockNativeHost?.close();
+    try { fs.unlinkSync(SOCKET_PATH); } catch { /* ok */ }
   });
 
   it('lists two tools', async () => {
@@ -120,36 +123,37 @@ describe('MCP Server integration', () => {
     ]);
   });
 
-  it('reports disconnected when no extension', async () => {
-    const resp = await sendMCPRequest({
+  it('reports connected when socket is available', async () => {
+    // MCP server is connected to our mock native host socket
+    // Send a status request — it goes through the socket, mock responds
+    const reader = createNativeMessageReader();
+
+    const statusPromise = sendMCPRequest({
       jsonrpc: '2.0',
       id: 2,
       method: 'tools/call',
       params: { name: 'site_sense_status', arguments: {} },
     });
-    const text = (resp as any).result.content[0].text;
-    const status = JSON.parse(text);
-    expect(status.connected).toBe(false);
-  });
 
-  it('returns error on capture when no extension', async () => {
-    const resp = await sendMCPRequest({
-      jsonrpc: '2.0',
-      id: 3,
-      method: 'tools/call',
-      params: { name: 'site_sense_capture', arguments: {} },
+    // Read the status request from the socket and respond
+    const req = await new Promise<any>((resolve) => {
+      mcpClientSocket!.once('data', (chunk) => {
+        reader.push(chunk);
+        resolve(reader.read());
+      });
     });
-    const content = (resp as any).result.content[0];
-    expect(content.text).toContain('not connected');
-    expect((resp as any).result.isError).toBe(true);
+    expect(req.type).toBe('status_request');
+    mcpClientSocket!.write(encodeNativeMessage({
+      type: 'status_response', id: req.id, connected: true, sessionApproved: false,
+    }));
+
+    const resp = await statusPromise;
+    const status = JSON.parse((resp as any).result.content[0].text);
+    expect(status.connected).toBe(true);
   });
 
-  it('relays capture via Unix socket to simulated extension', async () => {
-    // Connect a mock extension to the socket
-    const socket = net.createConnection(findTestSocket());
+  it('relays capture via socket to simulated extension', async () => {
     const reader = createNativeMessageReader();
-
-    await new Promise<void>((resolve) => socket.on('connect', resolve));
 
     // Request capture via MCP
     const capturePromise = sendMCPRequest({
@@ -159,9 +163,9 @@ describe('MCP Server integration', () => {
       params: { name: 'site_sense_capture', arguments: {} },
     });
 
-    // Mock extension reads the request from socket
+    // Mock native host reads the request from the MCP client socket
     const captureReq = await new Promise<any>((resolve) => {
-      socket.on('data', (chunk) => {
+      mcpClientSocket!.on('data', (chunk) => {
         reader.push(chunk);
         const msg = reader.read();
         if (msg) resolve(msg);
@@ -171,7 +175,7 @@ describe('MCP Server integration', () => {
     expect(captureReq.type).toBe('capture_request');
     expect(captureReq.id).toBeTruthy();
 
-    // Mock extension sends back a capture response
+    // Mock native host sends back a capture response
     const mockResponse = {
       type: 'capture_response',
       id: captureReq.id,
@@ -198,7 +202,7 @@ describe('MCP Server integration', () => {
       },
     };
 
-    socket.write(encodeNativeMessage(mockResponse));
+    mcpClientSocket!.write(encodeNativeMessage(mockResponse));
 
     // Verify MCP response
     const resp = await capturePromise;
@@ -220,14 +224,10 @@ describe('MCP Server integration', () => {
     expect(content[1].type).toBe('image');
     expect(content[1].mimeType).toBe('image/png');
 
-    socket.destroy();
   });
 
   it('reports connected after extension connects', async () => {
-    const socket = net.createConnection(findTestSocket());
     const reader = createNativeMessageReader();
-
-    await new Promise<void>((resolve) => socket.on('connect', resolve));
 
     // Request status via MCP
     const statusPromise = sendMCPRequest({
@@ -237,9 +237,9 @@ describe('MCP Server integration', () => {
       params: { name: 'site_sense_status', arguments: {} },
     });
 
-    // Mock extension receives status_request and responds
+    // Mock native host receives status_request and responds
     const statusReq = await new Promise<any>((resolve) => {
-      socket.on('data', (chunk) => {
+      mcpClientSocket!.on('data', (chunk) => {
         reader.push(chunk);
         const msg = reader.read();
         if (msg) resolve(msg);
@@ -248,7 +248,7 @@ describe('MCP Server integration', () => {
 
     expect(statusReq.type).toBe('status_request');
 
-    socket.write(
+    mcpClientSocket!.write(
       encodeNativeMessage({
         type: 'status_response',
         id: statusReq.id,
@@ -262,6 +262,5 @@ describe('MCP Server integration', () => {
     expect(status.connected).toBe(true);
     expect(status.sessionApproved).toBe(true);
 
-    socket.destroy();
   });
 });
