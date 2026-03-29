@@ -132,6 +132,16 @@ function startSocketServer(): net.Server {
     });
   });
 
+  // Handle "address in use" — another session owns the socket
+  socketServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      // Another MCP server is running — we'll work without the extension
+      // (status tool will report connected: false)
+      return;
+    }
+    throw err;
+  });
+
   socketServer.listen(SOCKET_PATH);
 
   // Tighten socket permissions (user-only)
