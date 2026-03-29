@@ -22,64 +22,70 @@ import {
 const SOCKET_DIR = path.join(os.tmpdir(), 'site-sense');
 const INFO_PATH = path.join(SOCKET_DIR, 'bridge.json');
 
-function getSocketPath(): string {
+function getSocketPaths(): string[] {
   try {
     const info = JSON.parse(fs.readFileSync(INFO_PATH, 'utf-8'));
-    return info.socketPath;
+    const entries = Array.isArray(info) ? info : [info];
+    return entries.map((e: { socketPath: string }) => e.socketPath).filter(Boolean);
   } catch {
-    // Fallback to default
-    return path.join(SOCKET_DIR, 'bridge.sock');
+    return [];
   }
 }
 
-function main() {
-  const socketPath = getSocketPath();
+function connectToFirst(paths: string[]): net.Socket {
+  if (paths.length === 0) {
+    throw new Error('No MCP server sockets found. Is a CLI session running?');
+  }
 
-  // Connect to MCP server's Unix domain socket
+  // Try first available socket
+  const socketPath = paths[0];
   const socket = net.createConnection(socketPath);
 
-  // Extension → MCP server: read native messaging from stdin, forward to socket
-  const stdinReader = createNativeMessageReader();
+  socket.on('error', () => {
+    // Try next socket if this one fails
+    if (paths.length > 1) {
+      const next = connectToFirst(paths.slice(1));
+      relay(next);
+    } else {
+      const errorMsg = encodeNativeMessage({
+        type: 'error',
+        error: 'Failed to connect to any MCP server. Is a CLI session running?',
+      });
+      process.stdout.write(errorMsg);
+      process.exit(1);
+    }
+  });
 
+  return socket;
+}
+
+function relay(socket: net.Socket) {
+  const stdinReader = createNativeMessageReader();
   process.stdin.on('data', (chunk: Buffer) => {
     stdinReader.push(chunk);
     let msg: unknown;
     while ((msg = stdinReader.read()) !== null) {
-      const encoded = encodeNativeMessage(msg);
-      socket.write(encoded);
+      socket.write(encodeNativeMessage(msg));
     }
   });
 
-  // MCP server → Extension: read from socket, write native messaging to stdout
   const socketReader = createNativeMessageReader();
-
   socket.on('data', (chunk: Buffer) => {
     socketReader.push(chunk);
     let msg: unknown;
     while ((msg = socketReader.read()) !== null) {
-      const encoded = encodeNativeMessage(msg);
-      process.stdout.write(encoded);
+      process.stdout.write(encodeNativeMessage(msg));
     }
   });
 
-  // Error handling
-  socket.on('error', (err: Error) => {
-    const errorMsg = encodeNativeMessage({
-      type: 'error',
-      error: `Failed to connect to MCP server: ${err.message}. Is the MCP server running?`,
-    });
-    process.stdout.write(errorMsg);
-    process.exit(1);
-  });
+  socket.on('close', () => process.exit(0));
+  process.stdin.on('end', () => { socket.destroy(); process.exit(0); });
+}
 
-  socket.on('close', () => {
-    process.exit(0);
-  });
-
-  process.stdin.on('end', () => {
-    socket.destroy();
-    process.exit(0);
-  });
+function main() {
+  const paths = getSocketPaths();
+  const socket = connectToFirst(paths);
+  relay(socket);
 }
 
 main();

@@ -32,9 +32,9 @@ import type {
   NativeStatusResponse,
 } from '../../shared/types.js';
 
-// --- Socket path ---
+// --- Socket path (per-PID to support multiple CLI sessions) ---
 const SOCKET_DIR = path.join(os.tmpdir(), 'site-sense');
-const SOCKET_PATH = path.join(SOCKET_DIR, 'bridge.sock');
+const SOCKET_PATH = path.join(SOCKET_DIR, `bridge-${process.pid}.sock`);
 
 // --- State ---
 let extensionSocket: net.Socket | null = null;
@@ -88,17 +88,23 @@ function handleExtensionMessage(message: unknown) {
 // --- Unix domain socket server ---
 
 function startSocketServer(): net.Server {
-  // Create socket directory with user-only permissions (0700)
   fs.mkdirSync(SOCKET_DIR, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(SOCKET_DIR, 0o700); } catch { /* best effort */ }
 
-  // Clean up stale socket (only if the owning process is dead)
+  // Clean up stale sockets from dead processes
   try {
-    const info = JSON.parse(fs.readFileSync(path.join(SOCKET_DIR, 'bridge.json'), 'utf-8'));
-    try { process.kill(info.pid, 0); } catch { fs.unlinkSync(SOCKET_PATH); }
-  } catch {
-    try { fs.unlinkSync(SOCKET_PATH); } catch { /* doesn't exist */ }
-  }
+    for (const file of fs.readdirSync(SOCKET_DIR)) {
+      if (!file.startsWith('bridge-') || !file.endsWith('.sock')) continue;
+      const pid = parseInt(file.slice(7, -5), 10);
+      if (isNaN(pid)) continue;
+      try { process.kill(pid, 0); } catch {
+        try { fs.unlinkSync(path.join(SOCKET_DIR, file)); } catch { /* ok */ }
+      }
+    }
+  } catch { /* dir doesn't exist yet */ }
+
+  // Remove our own socket if it exists
+  try { fs.unlinkSync(SOCKET_PATH); } catch { /* ok */ }
 
   const socketServer = net.createServer((socket) => {
     if (extensionSocket && !extensionSocket.destroyed) {
@@ -133,17 +139,19 @@ function startSocketServer(): net.Server {
   });
 
   socketServer.listen(SOCKET_PATH);
-
-  // Tighten socket permissions (user-only)
   try { fs.chmodSync(SOCKET_PATH, 0o600); } catch { /* best effort */ }
 
-  // Write info file with restricted permissions
+  // Register this socket so the native host can find it
   const infoPath = path.join(SOCKET_DIR, 'bridge.json');
-  fs.writeFileSync(
-    infoPath,
-    JSON.stringify({ socketPath: SOCKET_PATH, pid: process.pid }),
-    { mode: 0o600 }
-  );
+  let sockets: Array<{ socketPath: string; pid: number }> = [];
+  try {
+    const existing = JSON.parse(fs.readFileSync(infoPath, 'utf-8'));
+    sockets = Array.isArray(existing) ? existing : [existing];
+    // Remove entries for dead processes
+    sockets = sockets.filter(s => { try { process.kill(s.pid, 0); return true; } catch { return false; } });
+  } catch { /* no file yet */ }
+  sockets.push({ socketPath: SOCKET_PATH, pid: process.pid });
+  fs.writeFileSync(infoPath, JSON.stringify(sockets), { mode: 0o600 });
 
   return socketServer;
 }
@@ -404,19 +412,21 @@ async function main() {
     }
   }, 5000);
 
-  // Clean up on exit — only clean our own socket
+  // Clean up on exit — remove our socket and unregister from bridge.json
   const myPid = process.pid;
   const cleanup = () => {
     clearInterval(watchdog);
+    try { fs.unlinkSync(SOCKET_PATH); } catch { /* ok */ }
     try {
-      const info = JSON.parse(fs.readFileSync(path.join(SOCKET_DIR, 'bridge.json'), 'utf-8'));
-      if (info.pid === myPid) {
-        fs.unlinkSync(SOCKET_PATH);
+      const raw = JSON.parse(fs.readFileSync(path.join(SOCKET_DIR, 'bridge.json'), 'utf-8'));
+      const entries = Array.isArray(raw) ? raw : [raw];
+      const remaining = entries.filter((e: { pid: number }) => e.pid !== myPid);
+      if (remaining.length > 0) {
+        fs.writeFileSync(path.join(SOCKET_DIR, 'bridge.json'), JSON.stringify(remaining), { mode: 0o600 });
+      } else {
         fs.unlinkSync(path.join(SOCKET_DIR, 'bridge.json'));
       }
-    } catch {
-      // Best effort
-    }
+    } catch { /* best effort */ }
     socketServer.close();
     process.exit(0);
   };
