@@ -18,7 +18,6 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import * as net from 'node:net';
-import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
@@ -32,9 +31,9 @@ import type {
   NativeStatusResponse,
 } from '../../shared/types.js';
 
-// --- Socket path (per-PID, matching Claude's native host pattern) ---
+// --- Socket path (native host creates this, we connect to it) ---
 const SOCKET_DIR = path.join(os.tmpdir(), 'site-sense');
-const SOCKET_PATH = path.join(SOCKET_DIR, `bridge-${process.pid}.sock`);
+const SOCKET_PATH = path.join(SOCKET_DIR, 'bridge.sock');
 
 // --- State ---
 let extensionSocket: net.Socket | null = null;
@@ -85,35 +84,14 @@ function handleExtensionMessage(message: unknown) {
   }
 }
 
-// --- Unix domain socket server ---
+// --- Connect to native host socket (native host is the server) ---
 
-function startSocketServer(): net.Server {
-  fs.mkdirSync(SOCKET_DIR, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(SOCKET_DIR, 0o700); } catch { /* best effort */ }
+const RECONNECT_INTERVAL_MS = 3000;
 
-  // Clean up orphaned sockets from crashed/killed processes.
-  // Parse PID from filename, check if process is alive.
-  // Safe: we only delete files we created (bridge-{digits}.sock in our dir with 0700).
-  try {
-    for (const file of fs.readdirSync(SOCKET_DIR)) {
-      if (!/^bridge-\d+\.sock$/.test(file)) continue;
-      const pid = parseInt(file.slice(7, -5), 10);
-      let alive = false;
-      try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
-      if (!alive) {
-        try { fs.unlinkSync(path.join(SOCKET_DIR, file)); } catch { /* ok */ }
-      }
-    }
-  } catch { /* dir doesn't exist yet */ }
+function connectToNativeHost() {
+  const socket = net.createConnection(SOCKET_PATH);
 
-  // Remove our own socket if it somehow exists
-  try { fs.unlinkSync(SOCKET_PATH); } catch { /* ok */ }
-
-  const socketServer = net.createServer((socket) => {
-    if (extensionSocket && !extensionSocket.destroyed) {
-      extensionSocket.destroy();
-    }
-
+  socket.on('connect', () => {
     extensionSocket = socket;
     const reader = createNativeMessageReader();
 
@@ -124,28 +102,23 @@ function startSocketServer(): net.Server {
         handleExtensionMessage(msg);
       }
     });
-
-    socket.on('close', () => {
-      if (extensionSocket === socket) {
-        extensionSocket = null;
-      }
-      for (const [id, pending] of pendingRequests) {
-        clearTimeout(pending.timer);
-        pending.reject(new Error('Extension disconnected'));
-        pendingRequests.delete(id);
-      }
-    });
-
-    socket.on('error', () => {
-      socket.destroy();
-    });
   });
 
-  socketServer.listen(SOCKET_PATH);
+  socket.on('close', () => {
+    extensionSocket = null;
+    for (const [id, pending] of pendingRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Extension disconnected'));
+      pendingRequests.delete(id);
+    }
+    // Retry connection (native host may not be running yet)
+    setTimeout(connectToNativeHost, RECONNECT_INTERVAL_MS);
+  });
 
-  try { fs.chmodSync(SOCKET_PATH, 0o600); } catch { /* best effort */ }
-
-  return socketServer;
+  socket.on('error', () => {
+    // Socket doesn't exist yet or native host not running — retry silently
+    setTimeout(connectToNativeHost, RECONNECT_INTERVAL_MS);
+  });
 }
 
 // --- MCP Server ---
@@ -389,26 +362,15 @@ function createMCPServer(): Server {
 // --- Main ---
 
 async function main() {
-  const socketServer = startSocketServer();
+  // Connect to native host socket (retries until available)
+  connectToNativeHost();
 
   const mcpServer = createMCPServer();
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
 
-  // Watchdog: recreate socket if it disappears
-  const watchdog = setInterval(() => {
-    if (!fs.existsSync(SOCKET_PATH)) {
-      socketServer.close();
-      const newServer = startSocketServer();
-      Object.assign(socketServer, newServer);
-    }
-  }, 5000);
-
-  // Clean up on exit — delete our own socket
   const cleanup = () => {
-    clearInterval(watchdog);
-    try { fs.unlinkSync(SOCKET_PATH); } catch { /* best effort */ }
-    socketServer.close();
+    if (extensionSocket) extensionSocket.destroy();
     process.exit(0);
   };
 

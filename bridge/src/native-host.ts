@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * site-sense Native Messaging Host
- *
- * Thin relay between Chrome extension (native messaging on stdin/stdout)
- * and the MCP server (Unix domain socket).
+ * site-sense Native Messaging Host — Socket Server
  *
  * Chrome starts this process when the extension calls connectNative().
- * It connects to the MCP server's socket and pipes messages both ways.
+ * It creates a Unix socket server and accepts connections from MCP server
+ * instances (one per CLI session). Routes messages between Chrome and
+ * whichever MCP client sent the request.
+ *
+ * Architecture (matching Claude's native host pattern):
+ *   Chrome Extension ↔ this process (stdio) ↔ socket server ← MCP clients
  */
 
 import * as net from 'node:net';
@@ -20,76 +22,86 @@ import {
 } from './native-messaging.js';
 
 const SOCKET_DIR = path.join(os.tmpdir(), 'site-sense');
+const SOCKET_PATH = path.join(SOCKET_DIR, 'bridge.sock');
 
-// Scan directory for bridge-*.sock files, sorted newest first (by mtime)
-function findSockets(): string[] {
-  try {
-    return fs.readdirSync(SOCKET_DIR)
-      .filter(f => /^bridge-\d+\.sock$/.test(f))
-      .map(f => ({ path: path.join(SOCKET_DIR, f), mtime: fs.statSync(path.join(SOCKET_DIR, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime)
-      .map(f => f.path);
-  } catch {
-    return [];
-  }
-}
+// Track connected MCP clients
+const clients = new Map<number, net.Socket>();
+let nextClientId = 1;
 
-function main() {
-  const sockets = findSockets();
-  if (sockets.length === 0) {
-    const errorMsg = encodeNativeMessage({
-      type: 'error',
-      error: 'No MCP server running. Start a CLI session first.',
-    });
-    process.stdout.write(errorMsg);
-    process.exit(1);
-  }
+// Track which client is waiting for a response (by request ID)
+const pendingRequestClient = new Map<string, number>();
 
-  // Try the most recent socket
-  const socket = net.createConnection(sockets[0]);
+// ─── Chrome stdio (extension ↔ this process) ───────────────────────
 
-  // Extension → MCP server: read native messaging from stdin, forward to socket
-  const stdinReader = createNativeMessageReader();
+const chromeReader = createNativeMessageReader();
 
-  process.stdin.on('data', (chunk: Buffer) => {
-    stdinReader.push(chunk);
-    let msg: unknown;
-    while ((msg = stdinReader.read()) !== null) {
-      const encoded = encodeNativeMessage(msg);
-      socket.write(encoded);
+process.stdin.on('data', (chunk: Buffer) => {
+  chromeReader.push(chunk);
+  let msg: unknown;
+  while ((msg = chromeReader.read()) !== null) {
+    // Response from Chrome — route to the MCP client that sent the request
+    const message = msg as { id?: string; type?: string };
+    if (message.id && pendingRequestClient.has(message.id)) {
+      const clientId = pendingRequestClient.get(message.id)!;
+      pendingRequestClient.delete(message.id);
+      const client = clients.get(clientId);
+      if (client && !client.destroyed) {
+        client.write(encodeNativeMessage(msg));
+      }
+    } else {
+      // Broadcast to all clients (e.g. unsolicited events)
+      for (const client of clients.values()) {
+        if (!client.destroyed) client.write(encodeNativeMessage(msg));
+      }
     }
-  });
+  }
+});
 
-  // MCP server → Extension: read from socket, write native messaging to stdout
-  const socketReader = createNativeMessageReader();
+process.stdin.on('end', () => {
+  // Chrome disconnected — shut down
+  for (const client of clients.values()) client.destroy();
+  try { fs.unlinkSync(SOCKET_PATH); } catch { /* ok */ }
+  process.exit(0);
+});
+
+// ─── Socket server (MCP clients → this process) ────────────────────
+
+fs.mkdirSync(SOCKET_DIR, { recursive: true, mode: 0o700 });
+try { fs.chmodSync(SOCKET_DIR, 0o700); } catch { /* ok */ }
+
+// Clean up stale socket
+try { fs.unlinkSync(SOCKET_PATH); } catch { /* ok */ }
+
+const server = net.createServer((socket) => {
+  const clientId = nextClientId++;
+  clients.set(clientId, socket);
+
+  const reader = createNativeMessageReader();
 
   socket.on('data', (chunk: Buffer) => {
-    socketReader.push(chunk);
+    reader.push(chunk);
     let msg: unknown;
-    while ((msg = socketReader.read()) !== null) {
-      const encoded = encodeNativeMessage(msg);
-      process.stdout.write(encoded);
+    while ((msg = reader.read()) !== null) {
+      // Request from MCP client — forward to Chrome, track which client sent it
+      const message = msg as { id?: string };
+      if (message.id) {
+        pendingRequestClient.set(message.id, clientId);
+      }
+      // Forward to Chrome via stdout
+      process.stdout.write(encodeNativeMessage(msg));
     }
-  });
-
-  // Error handling
-  socket.on('error', (err: Error) => {
-    const errorMsg = encodeNativeMessage({
-      type: 'error',
-      error: `Failed to connect to MCP server: ${err.message}. Is the MCP server running?`,
-    });
-    process.stdout.write(errorMsg);
-    process.exit(1);
   });
 
   socket.on('close', () => {
-    process.exit(0);
+    clients.delete(clientId);
+    // Clean up any pending requests for this client
+    for (const [id, cid] of pendingRequestClient) {
+      if (cid === clientId) pendingRequestClient.delete(id);
+    }
   });
 
-  process.stdin.on('end', () => {
-    socket.destroy();
-    process.exit(0);
-  });
-}
+  socket.on('error', () => socket.destroy());
+});
 
-main();
+server.listen(SOCKET_PATH);
+try { fs.chmodSync(SOCKET_PATH, 0o600); } catch { /* ok */ }
