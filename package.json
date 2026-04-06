@@ -20,7 +20,9 @@
     "native-host": "node dist/bridge/src/native-host.js",
     "install-host": "node dist/scripts/install.js",
     "setup": "npm run build && node dist/scripts/install.js",
-    "setup:launch": "npm run build && node dist/scripts/install.js --launch"
+    "setup:launch": "npm run build && node dist/scripts/install.js --launch",
+    "zip:ext": "node dist/scripts/package-zip.js",
+    "package:ext": "npm run build && node dist/scripts/package-zip.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",

@@ -4,4 +4,5 @@ dist/
 *.tsbuildinfo
 .mcp.json
 site-sense-native-host
+site-sense.zip
 .copilot/
