@@ -1,6 +1,7 @@
 # site-sense
 
 [![CI](https://github.com/YotamNordman/site-sense/actions/workflows/ci.yml/badge.svg)](https://github.com/YotamNordman/site-sense/actions/workflows/ci.yml)
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/jhapajnoajjppmbgmfhfnoonkmgglklm)](https://chromewebstore.google.com/detail/site-sense/jhapajnoajjppmbgmfhfnoonkmgglklm)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Give your AI coding CLI eyes into web portals. No cloud. No storage. Read-only.**
@@ -15,14 +16,28 @@ You're in a conversation with your AI assistant. It says *"go to the Azure Porta
 
 ## Quick Start
 
+### Option A: Install from Chrome Web Store (recommended)
+
+1. [Install site-sense from the Chrome Web Store](https://chromewebstore.google.com/detail/site-sense/jhapajnoajjppmbgmfhfnoonkmgglklm)
+2. Clone the repo and run setup:
+
 ```bash
 git clone https://github.com/YotamNordman/site-sense.git
 cd site-sense
 npm install && npm run build
-npm run setup -- --browser edge    # or chrome
+npm run setup -- --browser chrome    # or edge
 ```
 
-Load the extension in your browser:
+### Option B: Load unpacked (development)
+
+```bash
+git clone https://github.com/YotamNordman/site-sense.git
+cd site-sense
+npm install && npm run build
+npm run setup -- --browser chrome    # or edge
+```
+
+Then load the extension manually:
 1. Open `edge://extensions` (or `chrome://extensions`)
 2. Enable **Developer mode**
 3. Click **Load unpacked** → select `dist/extension/`
